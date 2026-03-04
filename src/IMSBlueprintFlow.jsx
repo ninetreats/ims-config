@@ -168,6 +168,8 @@ function parseCsv(text) {
 }
 const createEmptyRow = () => ({
   assignment_id: '',
+  assignment_due_date: '',
+  assignment_due_date_source: '',
   action_type: '',
   percent: '',
   reason: '',
@@ -199,6 +201,14 @@ function toInputDateTimeValue(date) {
 function toIsoWithOffsetFromInput(value) {
   if (!value) return '';
   return format(parseISO(value), "yyyy-MM-dd'T'HH:mm:ssxxx");
+}
+
+function toInputDateTimeFromSource(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const parsed = parseISO(raw);
+  if (!isValid(parsed)) return '';
+  return format(parsed, "yyyy-MM-dd'T'HH:mm");
 }
 
 function toValidPositiveInt(value) {
@@ -281,9 +291,10 @@ function computeDates(blockStartDate, week, day) {
     milliseconds: 0,
   });
   const startDate = startFromWeekDay;
-  const dueDate = addDays(startDate, 3);
   const saturday = addDays(startOfWeek(startDate, { weekStartsOn: 0 }), 6);
   const expirationDate = set(saturday, { hours: 23, minutes: 59, seconds: 0, milliseconds: 0 });
+  const calculatedDueDate = addDays(startDate, 3);
+  const dueDate = calculatedDueDate.getTime() > expirationDate.getTime() ? expirationDate : calculatedDueDate;
 
   return {
     start: toInputDateTimeValue(startDate),
@@ -335,7 +346,7 @@ function CourseSelector({ onSelectCourse, onProceedWithoutBlueprint }) {
   return (
     <section className="rounded-md border border-slate-300 bg-white p-4 shadow-sm">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-[#00597b]">Course Selector</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-[#00597b]">Create New Algorithm</h2>
         <button
           type="button"
           onClick={() => {
@@ -466,6 +477,10 @@ export default function IMSBlueprintFlow() {
   const [copied, setCopied] = useState(false);
   const [isPayloadOpen, setIsPayloadOpen] = useState(false);
   const [csvNotice, setCsvNotice] = useState('');
+  const [configNotice, setConfigNotice] = useState('');
+  const [actionConfigs, setActionConfigs] = useState([]);
+  const [selectedActionConfigId, setSelectedActionConfigId] = useState('');
+  const [actionConfigName, setActionConfigName] = useState('');
   const [courseSaveNotice, setCourseSaveNotice] = useState('');
   const [newCourseName, setNewCourseName] = useState('');
   const [newCourseCode, setNewCourseCode] = useState('');
@@ -473,6 +488,7 @@ export default function IMSBlueprintFlow() {
   const [newCourseBlockStartDate, setNewCourseBlockStartDate] = useState('');
   const [newCourseAssignments, setNewCourseAssignments] = useState([createEmptyNewCourseAssignment()]);
   const [activeAppTab, setActiveAppTab] = useState('action');
+  const [actionPageMode, setActionPageMode] = useState('create');
   const [activeTab, setActiveTab] = useState('table');
   const [columnSort, setColumnSort] = useState({ key: 'none', dir: 'none' });
   const [chronologicalSortDir, setChronologicalSortDir] = useState('none');
@@ -501,6 +517,14 @@ export default function IMSBlueprintFlow() {
         `${a.course_code} - ${a.name}`.localeCompare(`${b.course_code} - ${b.name}`)
       ),
     [courseCatalog]
+  );
+  const courseById = useMemo(
+    () => Object.fromEntries(courseCatalog.map((course) => [String(course.id), course])),
+    [courseCatalog]
+  );
+  const selectedActionConfig = useMemo(
+    () => actionConfigs.find((cfg) => String(cfg.id) === String(selectedActionConfigId)) || null,
+    [actionConfigs, selectedActionConfigId]
   );
   const assignmentTitleById = useMemo(
     () =>
@@ -540,8 +564,25 @@ export default function IMSBlueprintFlow() {
     if (!selectedCourse) return;
 
     rows.forEach((row, idx) => {
+      const selectedAssignmentId = String(row?.assignment_id || '');
+      const defaultAssignmentDueDate = assignmentDueDateById[selectedAssignmentId] || '';
+      if (
+        selectedAssignmentId &&
+        selectedAssignmentId !== String(row.assignment_due_date_source || '') &&
+        defaultAssignmentDueDate
+      ) {
+        setValue(
+          `assignment_rows.${idx}.assignment_due_date`,
+          toInputDateTimeFromSource(defaultAssignmentDueDate),
+          { shouldDirty: true, shouldValidate: true }
+        );
+        setValue(`assignment_rows.${idx}.assignment_due_date_source`, selectedAssignmentId, {
+          shouldDirty: true,
+        });
+      }
+
       if (!row?.assignment_id || !row?.action_type || row.week_of_term === '' || row.day_of_week === '') return;
-      const assignmentDueDate = assignmentDueDateById[String(row.assignment_id)] || '';
+      const assignmentDueDate = row.assignment_due_date || toInputDateTimeFromSource(defaultAssignmentDueDate);
       if (!assignmentDueDate) return;
 
       const nextKey = `${selectedCourse.id}|${row.assignment_id}|${row.action_type}|${row.week_of_term}|${row.day_of_week}|${assignmentDueDate}`;
@@ -635,7 +676,7 @@ export default function IMSBlueprintFlow() {
 
   function sortByAssignmentDueDate() {
     sortByColumn('assignment_due_date', (row) => {
-      const due = assignmentDueDateById[String(row.assignment_id)] || '';
+      const due = row.assignment_due_date || toInputDateTimeFromSource(assignmentDueDateById[String(row.assignment_id)] || '');
       if (!due) return Number.POSITIVE_INFINITY;
       const ts = parseISO(due).getTime();
       return Number.isFinite(ts) ? ts : Number.POSITIVE_INFINITY;
@@ -719,7 +760,7 @@ export default function IMSBlueprintFlow() {
         const startDate = parseISO(row.start_date);
         const expirationDate = parseISO(row.expiration_date);
         const actionDueDate = row.due_date ? parseISO(row.due_date) : null;
-        const assignmentDueValue = assignmentDueDateById[assignmentId] || '';
+        const assignmentDueValue = row.assignment_due_date || toInputDateTimeFromSource(assignmentDueDateById[assignmentId] || '');
         const assignmentDueDate = assignmentDueValue ? parseISO(assignmentDueValue) : null;
         return {
           assignmentId,
@@ -792,6 +833,122 @@ export default function IMSBlueprintFlow() {
     void refreshCourseCatalog();
   }, []);
 
+  async function refreshActionConfigs() {
+    try {
+      const list = await mockApi.listActionConfigs();
+      setActionConfigs(list);
+      if (selectedActionConfigId && !list.some((cfg) => String(cfg.id) === String(selectedActionConfigId))) {
+        setSelectedActionConfigId('');
+        setActionConfigName('');
+      }
+    } catch {
+      setActionConfigs([]);
+    }
+  }
+
+  useEffect(() => {
+    setConfigNotice('');
+    void refreshActionConfigs();
+  }, [selectedCourse?.id]);
+
+  async function loadActionConfigurationById(configId) {
+    if (!configId) return;
+    const loaded = await mockApi.getActionConfig(configId);
+    const targetCourse = courseById[String(loaded.course_id)];
+    if (!targetCourse) throw new Error(`Course ${loaded.course_id} for this file is not available.`);
+    if (!selectedCourse || Number(selectedCourse.id) !== Number(loaded.course_id)) {
+      await handleCourseSelect(targetCourse);
+    }
+    const loadedRows = (loaded.rows || []).map((row) => ({
+      ...createEmptyRow(),
+      ...row,
+      aggregate_assignment_ids: Array.isArray(row.aggregate_assignment_ids)
+        ? row.aggregate_assignment_ids.map((id) => String(id))
+        : [],
+    }));
+    replace(loadedRows.length ? loadedRows : [createEmptyRow()]);
+    setActionConfigName(loaded.name || '');
+    setConfigNotice(`Loaded configuration "${loaded.name}".`);
+  }
+
+  function onSelectActionConfig(configId) {
+    setSelectedActionConfigId(configId);
+    const cfg = actionConfigs.find((item) => String(item.id) === String(configId));
+    setActionConfigName(cfg?.name || '');
+    setConfigNotice('');
+    if (configId) {
+      void loadActionConfigurationById(configId).catch((err) =>
+        setConfigNotice(err?.message || 'Failed to load configuration.')
+      );
+    }
+  }
+
+  async function saveActionConfiguration(saveAsNew = false) {
+    try {
+      if (!selectedCourse) throw new Error('Select a course first.');
+      const name = actionConfigName.trim();
+      if (!name) throw new Error('Enter a configuration file name.');
+      const configRows = rows
+        .filter((row) => row.assignment_id !== '')
+        .map((row) => ({
+          assignment_id: row.assignment_id || '',
+          assignment_due_date: row.assignment_due_date || '',
+          assignment_due_date_source: row.assignment_due_date_source || '',
+          action_type: row.action_type || '',
+          percent: row.percent || '',
+          reason: row.reason || '',
+          description: row.description || '',
+          aggregate_assignment_ids: Array.isArray(row.aggregate_assignment_ids)
+            ? row.aggregate_assignment_ids.map((id) => String(id))
+            : [],
+          week_of_term: row.week_of_term ?? '',
+          day_of_week: row.day_of_week ?? '',
+          start_date: row.start_date || '',
+          due_date: row.due_date || '',
+          expiration_date: row.expiration_date || '',
+          calc_key: row.calc_key || '',
+        }));
+      if (!configRows.length) throw new Error('Add at least one assignment row before saving.');
+
+      const saved = await mockApi.saveActionConfig({
+        id: saveAsNew ? '' : selectedActionConfigId,
+        course_id: selectedCourse.id,
+        name,
+        rows: configRows,
+      });
+      await refreshActionConfigs();
+      setSelectedActionConfigId(saved.id);
+      setActionConfigName(saved.name);
+      setConfigNotice(`Saved configuration "${saved.name}".`);
+    } catch (err) {
+      setConfigNotice(err?.message || 'Failed to save configuration.');
+    }
+  }
+
+  async function loadSelectedActionConfiguration() {
+    try {
+      if (!selectedActionConfigId) throw new Error('Select a configuration file to load.');
+      await loadActionConfigurationById(selectedActionConfigId);
+    } catch (err) {
+      setConfigNotice(err?.message || 'Failed to load configuration.');
+    }
+  }
+
+  async function deleteSelectedActionConfiguration() {
+    try {
+      if (!selectedActionConfigId) throw new Error('Select a configuration file to delete.');
+      const label = selectedActionConfig?.name || 'this configuration';
+      if (!window.confirm(`Delete configuration "${label}"?`)) return;
+      await mockApi.deleteActionConfig(selectedActionConfigId);
+      setSelectedActionConfigId('');
+      setActionConfigName('');
+      await refreshActionConfigs();
+      setConfigNotice(`Deleted configuration "${label}".`);
+    } catch (err) {
+      setConfigNotice(err?.message || 'Failed to delete configuration.');
+    }
+  }
+
   function exportConfigCsv() {
     if (!selectedCourse) {
       setCsvNotice('Select a course before exporting CSV.');
@@ -805,7 +962,7 @@ export default function IMSBlueprintFlow() {
         selectedCourse.name,
         row.assignment_id,
         assignmentTitleById[assignmentId] || '',
-        assignmentDueDateById[assignmentId] || '',
+        row.assignment_due_date || '',
         row.action_type || '',
         row.week_of_term ?? '',
         row.day_of_week ?? '',
@@ -865,6 +1022,8 @@ export default function IMSBlueprintFlow() {
 
       const importedRows = rowsParsed.map((r) => ({
         assignment_id: r[idx.assignment_id] || '',
+        assignment_due_date: r[idx.assignment_due_date] || '',
+        assignment_due_date_source: r[idx.assignment_id] || '',
         action_type: r[idx.action_type] || '',
         percent: r[idx.percent] || '',
         reason: r[idx.reason] || '',
@@ -1170,7 +1329,129 @@ export default function IMSBlueprintFlow() {
 
         {activeAppTab === 'action' && (
           <>
+            <div className="grid gap-4 lg:grid-cols-[230px_minmax(0,1fr)]">
+              <aside className="self-start lg:sticky lg:top-6">
+                <section className="rounded-md border border-slate-300 bg-white p-2 shadow-sm">
+                  <div className="space-y-1">
+                    <button
+                      type="button"
+                      onClick={() => setActionPageMode('create')}
+                      className={`w-full rounded-md px-3 py-2 text-left text-sm font-semibold ${
+                        actionPageMode === 'create'
+                          ? 'bg-[#0b5f87] text-white'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      Create New Algorithm
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActionPageMode('load')}
+                      className={`w-full rounded-md px-3 py-2 text-left text-sm font-semibold ${
+                        actionPageMode === 'load'
+                          ? 'bg-[#0b5f87] text-white'
+                          : 'text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      Edit Existing Algorithm
+                    </button>
+                  </div>
+                </section>
+              </aside>
+
+              <div className="space-y-4">
+            {actionPageMode === 'load' && (
+            <section className="rounded-md border border-slate-300 bg-[#eef0f2] p-4 shadow-sm">
+              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[#00597b]">Edit Existing Algorithm</h2>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">Existing Files</span>
+                  <select
+                    value={selectedActionConfigId}
+                    onChange={(e) => onSelectActionConfig(e.target.value)}
+                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  >
+                    <option value="">Select configuration file</option>
+                    {actionConfigs.map((cfg) => (
+                      <option key={cfg.id} value={cfg.id}>
+                        {cfg.name}{courseById[String(cfg.course_id)] ? ` (${courseById[String(cfg.course_id)].course_code})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">File Name</span>
+                  <input
+                    type="text"
+                    value={actionConfigName}
+                    onChange={(e) => setActionConfigName(e.target.value)}
+                    disabled={!selectedCourse}
+                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
+                    placeholder="e.g. Week 1 outreach config"
+                  />
+                </label>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void saveActionConfiguration(false)}
+                  disabled={!selectedCourse || !selectedActionConfigId}
+                  className="rounded-md bg-[#0b5f87] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#0a5275] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Save Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveActionConfiguration(true)}
+                  disabled={!selectedCourse}
+                  className="rounded-md bg-[#0b5f87] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#0a5275] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Save As New
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void deleteSelectedActionConfiguration()}
+                  disabled={!selectedCourse || !selectedActionConfigId}
+                  className="rounded-md bg-rose-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Delete File
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-300 pt-3">
+                <button
+                  type="button"
+                  onClick={exportConfigCsv}
+                  className="rounded-md bg-[#0b5f87] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#0a5275]"
+                >
+                  Export CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => csvInputRef.current?.click()}
+                  className="rounded-md bg-[#0b5f87] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#0a5275]"
+                >
+                  Import CSV
+                </button>
+                <input
+                  ref={csvInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const [file] = e.target.files || [];
+                    void importConfigCsv(file);
+                    e.target.value = '';
+                  }}
+                />
+              </div>
+              {configNotice && <p className="mt-2 text-xs text-slate-700">{configNotice}</p>}
+              {csvNotice && <p className="mt-2 text-xs text-slate-700">{csvNotice}</p>}
+            </section>
+            )}
+
+            {actionPageMode === 'create' && (
             <CourseSelector onSelectCourse={handleCourseSelect} onProceedWithoutBlueprint={handleProceedWithoutBlueprint} />
+            )}
 
         <section className="rounded-md border border-slate-300 bg-[#eef0f2] p-4 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -1220,7 +1501,7 @@ export default function IMSBlueprintFlow() {
         )}
 
         {activeTab === 'table' && fields.length > 0 && (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-hidden">
             <div className="mb-2 flex justify-end">
               <button
                 type="button"
@@ -1233,15 +1514,15 @@ export default function IMSBlueprintFlow() {
                 </span>
               </button>
             </div>
-            <table className="min-w-[1180px] table-fixed border-collapse text-sm">
+            <table className="w-full table-fixed border-collapse text-sm">
               <colgroup>
-                <col className="w-[380px]" />
-                <col className="w-[210px]" />
-                <col className="w-[240px]" />
-                <col className="w-[120px]" />
-                <col className="w-[120px]" />
-                <col className="w-[100px]" />
-                <col className="w-[90px]" />
+                <col className="w-[28%]" />
+                <col className="w-[18%]" />
+                <col className="w-[19%]" />
+                <col className="w-[10%]" />
+                <col className="w-[10%]" />
+                <col className="w-[8%]" />
+                <col className="w-[7%]" />
               </colgroup>
               <thead>
                 <tr className="bg-[#f5f6f7] text-slate-800">
@@ -1306,7 +1587,7 @@ export default function IMSBlueprintFlow() {
               <tbody>
                 {fields.map((field, idx) => {
                   const row = rows[idx] || {};
-                  const assignmentDueDate = assignmentDueDateById[String(row.assignment_id)] || '';
+                  const assignmentDueDate = row.assignment_due_date || toInputDateTimeFromSource(assignmentDueDateById[String(row.assignment_id)] || '');
                   const assignmentTitleLower = assignmentTitleByIdLower[String(row.assignment_id)] || '';
                   const isAllStudentsAssignment = assignmentTitleLower === 'all students';
                   const isMultipleAssignments = assignmentTitleLower === 'multiple assignments';
@@ -1336,9 +1617,17 @@ export default function IMSBlueprintFlow() {
                         </select>
                       </td>
                       <td className="border border-slate-200 px-2 py-2">
-                        <div className="rounded-md bg-slate-50 px-2 py-1.5 text-sm text-slate-700">
-                          {formatFriendlyDateTime(assignmentDueDate)}
-                        </div>
+                        <input
+                          type="datetime-local"
+                          {...register(`assignment_rows.${idx}.assignment_due_date`, {
+                            onChange: () => {
+                              setValue(`assignment_rows.${idx}.calc_key`, '', { shouldDirty: true });
+                              void trigger(`assignment_rows.${idx}.start_date`);
+                            },
+                          })}
+                          disabled={!row.assignment_id}
+                          className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
+                        />
                       </td>
                       <td className="border border-slate-200 px-2 py-2">
                         <select
@@ -1454,7 +1743,8 @@ export default function IMSBlueprintFlow() {
                                         validate: (value) => {
                                           if (!value) return 'Action start date is required';
                                           const assignmentId = getValues(`assignment_rows.${idx}.assignment_id`);
-                                          const due = assignmentDueDateById[String(assignmentId)] || '';
+                                          const due = getValues(`assignment_rows.${idx}.assignment_due_date`)
+                                            || toInputDateTimeFromSource(assignmentDueDateById[String(assignmentId)] || '');
                                           if (!due) return true;
                                           return parseISO(value).getTime() >= parseISO(due).getTime()
                                             || 'Action start date cannot be before assignment due date';
@@ -1793,37 +2083,36 @@ export default function IMSBlueprintFlow() {
         </div>
         </section>
 
+            {actionPageMode === 'create' && (
             <section className="rounded-md border border-slate-300 bg-[#eef0f2] p-4 shadow-sm">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[#00597b]">Configuration Files</h2>
-              <div className="flex flex-wrap items-center gap-3">
+              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-[#00597b]">Save Algorithm</h2>
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="min-w-[280px] flex-1 text-sm">
+                  <span className="mb-1 block text-xs font-medium text-slate-600">Algorithm Name</span>
+                  <input
+                    type="text"
+                    value={actionConfigName}
+                    onChange={(e) => setActionConfigName(e.target.value)}
+                    disabled={!selectedCourse}
+                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm disabled:cursor-not-allowed disabled:bg-slate-100"
+                    placeholder="e.g. Week 1 outreach config"
+                  />
+                </label>
                 <button
                   type="button"
-                  onClick={exportConfigCsv}
-                  className="rounded-md bg-[#0b5f87] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#0a5275]"
+                  onClick={() => void saveActionConfiguration(true)}
+                  disabled={!selectedCourse}
+                  className="rounded-md bg-[#0b5f87] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#0a5275] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Export CSV
+                  Save Algorithm
                 </button>
-                <button
-                  type="button"
-                  onClick={() => csvInputRef.current?.click()}
-                  className="rounded-md bg-[#0b5f87] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#0a5275]"
-                >
-                  Import CSV
-                </button>
-                <input
-                  ref={csvInputRef}
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={(e) => {
-                    const [file] = e.target.files || [];
-                    void importConfigCsv(file);
-                    e.target.value = '';
-                  }}
-                />
               </div>
-              {csvNotice && <p className="mt-2 text-xs text-slate-700">{csvNotice}</p>}
+              {configNotice && <p className="mt-2 text-xs text-slate-700">{configNotice}</p>}
             </section>
+            )}
+              </div>
+            </div>
+
           </>
         )}
 

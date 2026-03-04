@@ -3,6 +3,7 @@ const STORAGE_KEY = 'ims_custom_courses_v1';
 const ASSIGNMENT_OVERRIDE_KEY = 'ims_assignment_overrides_v1';
 const COURSE_OVERRIDE_KEY = 'ims_course_overrides_v1';
 const DELETED_BUILTIN_COURSE_KEY = 'ims_deleted_builtin_courses_v1';
+const ACTION_CONFIGS_KEY = 'ims_action_configs_v1';
 
 const BUILTIN_COURSES = [
   { id: 202, name: 'PC102 - Professional Skills', course_code: 'PC102', term: '2026 Block 2', block_start_date: '2026-03-02' },
@@ -193,6 +194,24 @@ function readDeletedBuiltInCourses() {
 function writeDeletedBuiltInCourses(courseIds) {
   if (!hasStorage()) return;
   window.localStorage.setItem(DELETED_BUILTIN_COURSE_KEY, JSON.stringify(courseIds));
+}
+
+function readActionConfigs() {
+  if (!hasStorage()) return [];
+  try {
+    const raw = window.localStorage.getItem(ACTION_CONFIGS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((cfg) => cfg && cfg.id && Number.isFinite(Number(cfg.course_id)) && Array.isArray(cfg.rows));
+  } catch {
+    return [];
+  }
+}
+
+function writeActionConfigs(configs) {
+  if (!hasStorage()) return;
+  window.localStorage.setItem(ACTION_CONFIGS_KEY, JSON.stringify(configs));
 }
 
 function getAllCourses() {
@@ -443,6 +462,9 @@ export async function deleteCourse(courseId) {
       delete courseOverrides[numericId];
       writeCourseOverrides(courseOverrides);
     }
+
+    const configs = readActionConfigs().filter((cfg) => Number(cfg.course_id) !== numericId);
+    writeActionConfigs(configs);
     return { deleted: true, courseId: numericId };
   }
 
@@ -466,7 +488,94 @@ export async function deleteCourse(courseId) {
     writeCourseOverrides(courseOverrides);
   }
 
+  const configs = readActionConfigs().filter((cfg) => Number(cfg.course_id) !== numericId);
+  writeActionConfigs(configs);
+
   return { deleted: true, courseId: numericId };
+}
+
+export async function listActionConfigs(courseId) {
+  await wait(60);
+  const numericCourseId = Number(courseId);
+  return readActionConfigs()
+    .filter((cfg) => (!Number.isFinite(numericCourseId) ? true : Number(cfg.course_id) === numericCourseId))
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+}
+
+export async function getActionConfig(configId) {
+  await wait(60);
+  const targetId = String(configId || '').trim();
+  if (!targetId) throw new Error('Configuration id is required.');
+  const config = readActionConfigs().find((cfg) => String(cfg.id) === targetId);
+  if (!config) throw new Error('Configuration file not found.');
+  return config;
+}
+
+export async function saveActionConfig(input) {
+  await wait(80);
+  const courseId = Number(input?.course_id);
+  const name = String(input?.name || '').trim();
+  const rows = Array.isArray(input?.rows) ? input.rows : [];
+  if (!Number.isFinite(courseId)) throw new Error('A valid course is required.');
+  if (!name) throw new Error('Configuration file name is required.');
+
+  const now = new Date().toISOString();
+  const configs = readActionConfigs();
+  const existingId = String(input?.id || '').trim();
+  const normalizedRows = rows.map((row) => ({
+    assignment_id: row.assignment_id ?? '',
+    assignment_due_date: row.assignment_due_date ?? '',
+    assignment_due_date_source: row.assignment_due_date_source ?? '',
+    action_type: row.action_type ?? '',
+    percent: row.percent ?? '',
+    reason: row.reason ?? '',
+    description: row.description ?? '',
+    aggregate_assignment_ids: Array.isArray(row.aggregate_assignment_ids) ? row.aggregate_assignment_ids : [],
+    week_of_term: row.week_of_term ?? '',
+    day_of_week: row.day_of_week ?? '',
+    start_date: row.start_date ?? '',
+    due_date: row.due_date ?? '',
+    expiration_date: row.expiration_date ?? '',
+    calc_key: row.calc_key ?? '',
+  }));
+
+  if (existingId) {
+    const idx = configs.findIndex((cfg) => String(cfg.id) === existingId);
+    if (idx < 0) throw new Error('Configuration file not found.');
+    const updated = [...configs];
+    updated[idx] = {
+      ...updated[idx],
+      name,
+      course_id: courseId,
+      rows: normalizedRows,
+      updated_at: now,
+    };
+    writeActionConfigs(updated);
+    return updated[idx];
+  }
+
+  const id = `cfg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const created = {
+    id,
+    name,
+    course_id: courseId,
+    rows: normalizedRows,
+    created_at: now,
+    updated_at: now,
+  };
+  writeActionConfigs([created, ...configs]);
+  return created;
+}
+
+export async function deleteActionConfig(configId) {
+  await wait(80);
+  const targetId = String(configId || '').trim();
+  if (!targetId) throw new Error('Configuration id is required.');
+  const configs = readActionConfigs();
+  const exists = configs.some((cfg) => String(cfg.id) === targetId);
+  if (!exists) throw new Error('Configuration file not found.');
+  writeActionConfigs(configs.filter((cfg) => String(cfg.id) !== targetId));
+  return { deleted: true, id: targetId };
 }
 
 const mockApi = {
@@ -477,6 +586,10 @@ const mockApi = {
   saveAssignmentsForCourse,
   updateCourseMetadata,
   deleteCourse,
+  listActionConfigs,
+  getActionConfig,
+  saveActionConfig,
+  deleteActionConfig,
 };
 
 export default mockApi;
